@@ -113,14 +113,16 @@ __global__ void add_kernel_non_interleaved(
 		NON_INTERLEAVED_T * const src_ptr, const unsigned int iter,
 		const unsigned int num_elements) {
 
-	for (unsigned int tid = 0; tid < num_elements; tid++) {
-		for (unsigned int i = 0; i < iter; i++) {
-			dest_ptr->a[tid] += src_ptr->a[tid];
-			dest_ptr->b[tid] += src_ptr->b[tid];
-			dest_ptr->c[tid] += src_ptr->c[tid];
-			dest_ptr->d[tid] += src_ptr->d[tid];
-		}
-	}
+    const unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (tid >= num_elements) return;
+    for (unsigned int i = 0; i < iter; i++) {
+        dest_ptr->a[tid] += src_ptr->a[tid];
+        dest_ptr->b[tid] += src_ptr->b[tid];
+        dest_ptr->c[tid] += src_ptr->c[tid];
+        dest_ptr->d[tid] += src_ptr->d[tid];
+    }
+
 }
 
 __host__ float add_test_interleavedGPU(INTERLEAVED_T * const host_dest_ptr,
@@ -192,7 +194,6 @@ __host__ float add_test_non_interleavedGPU(NON_INTERLEAVED_T * const host_dest_p
 	cudaEventRecord(kernel_start, 0);
 
 	add_kernel_non_interleaved<<<num_blocks,num_threads>>>(device_dest_ptr, device_src_ptr, iter, num_elements);
-
 	cudaEventRecord(kernel_stop, 0);
 
 	cudaEventSynchronize(kernel_stop);
@@ -493,7 +494,7 @@ void InterleavedAndNonInterleavedGPUtest()
 		return;
 	}
 	init_interleaved(host_src_ptr,1);
-
+	init_interleaved(host_dest_ptr,0);
 	float duration = add_test_interleavedGPU(host_dest_ptr, host_src_ptr, 4,NUM_ELEMENTS);
 	printf("interleaved on GPU duration: %fms\n", duration);
 
@@ -506,9 +507,9 @@ void InterleavedAndNonInterleavedGPUtest()
 		return;
 	}
 	init_non_interleaved(nhost_src_ptr,1);
-
+	init_non_interleaved(nhost_dest_ptr,0);
 	float nduration = add_test_non_interleavedGPU(nhost_dest_ptr, nhost_src_ptr, 4,NUM_ELEMENTS);
-	printf("non interleaved on heap duration: %fms\n", nduration);
+	printf("non interleaved on GPU duration: %fms\n", nduration);
 }
 
 void bitreversegpu()
