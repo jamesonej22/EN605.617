@@ -25,7 +25,9 @@ Input Image                            |  Expected Output Image
 
 The [Advanced Encryption Standard (AES)](https://en.wikipedia.org/wiki/Advanced_Encryption_Standard) is a symmetric-key block cipher, used heavily for the encryption of electronic data. Symmetric-key means that both the sender and the receiver share the same secret key, which is used for both encryption and decryption. A block cipher is a deterministic encryption scheme that operates on fixed-length groups of data, called blocks. The block size of AES is 128 bits, or 16 bytes, and each portion of the algorithm operates on one 16-byte block. For the purposes of this algorithm, we can treat each 16-byte block as a $4 \times 4$ column-major array, known as the **state**:
 
-$$ \begin{bmatrix} b_0 & b_4 & b_8 & b_{12} \\ b_1 & b_5 & b_9 & b_{13} \\ b_2 & b_6 & b_{10} & b_{14} \\ b_3 & b_7 & b_{11} & b_{15} \end{bmatrix}$$
+```math
+\begin{bmatrix} b_0 & b_4 & b_8 & b_{12} \\ b_1 & b_5 & b_9 & b_{13} \\ b_2 & b_6 & b_{10} & b_{14} \\ b_3 & b_7 & b_{11} & b_{15} \end{bmatrix}
+```
 
 Each block is encrypted by repeating small operations on the state for a set number of rounds. Specifically for this assignment, I have implemented AES-128, meaning that the key is 128 bits long, and the algorithm specification requires 10 rounds of encryption for each block. Although the details of the algorithm itself are beyond the scope of this assignment, a high level description of the algorithm is given here:
 
