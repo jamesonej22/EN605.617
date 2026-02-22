@@ -67,7 +67,7 @@ The supplied image is of size $1920 \times 1080\times 3 = 6220800$ bytes. Becaus
 
 1. $\geq 388800$ threads are allocated. In this case, the first $388800$ threads will perform the entirety of the encryption and the rest will remain idle.
 
-2. $< 388800$ threads are allocated. In this case, one thread may be responsible for encrypting multiple blocks, and will continue encrypting blocks until the entire image is encrypted.
+2. $< 388800$ threads are allocated. In this case, one thread may be responsible for encrypting multiple blocks, and will continue encrypting blocks until the entire image is encrypted. The number of blocks encrypted by each thread will be reported in the terminal output.
 
 After running the program, 5 images will be created, one for each implementation:
 
@@ -76,6 +76,8 @@ After running the program, 5 images will be created, one for each implementation
 - `encrypted___global.ppm`
 - `encrypted_shared_g.ppm`
 - `encrypted_shared_c.ppm`
+
+Finally, timing data for each of the 5 implementations is shown. Each implementation is run for 5 iterations (with one additional "dry run" before timing begins) and the average time taken is reported in the terminal output.
 
 ## Example Terminal Output
 
@@ -89,11 +91,11 @@ This image shows a successful run of the assignment program with a number of thr
 
 This image shows a successful run of the assignment program with a number of threads larger than the image size, and a different block size.
 
-![Image showing sample output with arguments passed](images/Output_12441600_768.png)
+![Image showing sample output with arguments passed](images/Output_500000_500.png)
 
 This final image shows a successful run of the assignment program with a block size that does not evenly divide the number of threads. This is indicated by a message and the total number of threads being rounded up so that it is evenly divisible by the block size.
 
-![Image showing sample output with arguments passed](images/Output_6220800_500.png)
+![Image showing sample output with arguments passed](images/Output_388800_768.png)
 
 ## Verification of Results
 
@@ -121,8 +123,15 @@ where `$KEY` is the key I defined for this assignment. Finally, I did one last `
 > ./verify.sh
 ```
 
-Note that the `dd` utility is relatively slow, so the verification takes roughly 60 seconds.
+Note that the `dd` utility is relatively slow, so the verification takes roughly 60 seconds. Example output from the `verify.sh` is shown below:
+
+![Image showing verification output](images/VerifyOutput.png)
 
 ## Discussion
 
-I
+I had two main takeways from this assignment, mostly in regard to the different memory types:
+
+- Constant memory is very clearly not optimized for random access, and should be use more for broadcasting patterns. Global memory, on the other hand, does seem to have decent performance in random access.
+- There is a benefit to using shared memory, and the fact that both shared memory kernels were faster than either the global or constant memory kernels *despite* the timing not accounting for the time it takes to set up the shared memory is confirmation of this.
+
+On a somewhat unrelated note, I was rather pleased that my "optimized" CPU implementation of AES-128 was roughly on par with the OpenSSL implementation, and very pleased that the GPU implementations were ~40x faster. It is likely that I will continue working on GPU-accelerated cryptography for my course project.
