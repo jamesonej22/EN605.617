@@ -8,6 +8,11 @@
 #include <cublas_v2.h>
 #include <curand.h>
 #include <cusolverDn.h>
+#include <thrust/device_ptr.h>
+#include <thrust/extrema.h>
+#include <thrust/functional.h>
+#include <thrust/reduce.h>
+#include <thrust/transform.h>
 
 #include <iomanip>
 #include <iostream>
@@ -46,38 +51,44 @@ void print_header(unsigned long long seed) {
         << "+-----------------------------------------------------------------------------+\n";
 }
 
-/** @brief Prints formatted timing and residual results for both solvers.
+/** @brief Prints array information, then formatted timing and residual results for both solvers.
  *
  * @param n Dimension of the system.
+ * @param condition The computed condition number of the input matrix.
  * @param ne_timing Normal equations runtime (ms).
  * @param ne_residual Normal equations residual.
  * @param ls_timing QR solver runtime (ms).
  * @param ls_residual QR solver residual.
  */
-void print_timing_and_residuals(int n, float ne_timing, float ne_residual, float qr_timing,
-                                float qr_residual) {
+void print_timing_and_residuals(int n, float condition, float ne_timing, float ne_residual,
+                                float qr_timing, float qr_residual) {
     int total_width = 80;
     int value_width = 17;
 
     std::cout << std::fixed << std::setprecision(5);
-    std::cout
-        << "| ARRAY SIZE: " << n << " x " << n
-        << std::setw(total_width - value_width - 2 * std::to_string(n).length()) << " |\n"
-        << "+-----------------------------------------------------------------------------+\n"
-        // Normal equations
-        << "|   Normal Equations   |                     Time Taken: " << std::setw(value_width)
-        << ne_timing << " ms |\n"
-        << "|                      |                     Residual:      " << std::scientific
-        << std::setprecision(4) << std::setw(value_width) << ne_residual << std::fixed
-        << std::setprecision(5) << " |\n"
-        << "+----------------------+                                                      |\n"
-        // QR
-        << "|   QR Decomposition   |                     Time Taken: " << std::setw(value_width)
-        << qr_timing << " ms |\n"
-        << "|                      |                     Residual:      " << std::scientific
-        << std::setprecision(4) << std::setw(value_width) << qr_residual << std::fixed
-        << std::setprecision(5) << " |\n"
-        << "+-----------------------------------------------------------------------------+\n";
+    std::cout << "| ARRAY SIZE: " << n << " x " << n
+              << std::setw(total_width - value_width - 2 * std::to_string(n).length()) << " |\n"
+              << "| Condition Number: " << std::scientific << std::setprecision(3) << condition
+              << std::fixed << std::setprecision(5) << std::setw(total_width - value_width - 12)
+              << " |\n"
+              << "+-----------------------------------------------------------"
+                 "------------------+\n"
+              // Normal equations
+              << "|   Normal Equations   |                     Time Taken: "
+              << std::setw(value_width) << ne_timing << " ms |\n"
+              << "|                      |                     Residual:      " << std::scientific
+              << std::setprecision(4) << std::setw(value_width) << ne_residual << std::fixed
+              << std::setprecision(5) << " |\n"
+              << "+----------------------+                                    "
+                 "                  |\n"
+              // QR
+              << "|   QR Decomposition   |                     Time Taken: "
+              << std::setw(value_width) << qr_timing << " ms |\n"
+              << "|                      |                     Residual:      " << std::scientific
+              << std::setprecision(4) << std::setw(value_width) << qr_residual << std::fixed
+              << std::setprecision(5) << " |\n"
+              << "+-----------------------------------------------------------"
+                 "------------------+\n";
 }
 
 /** @brief Generates a random square matrix of size \p n x \p n and a random vector of size \p n
@@ -91,6 +102,41 @@ void print_timing_and_residuals(int n, float ne_timing, float ne_residual, float
 void generate_random_data(curandGenerator_t gen, float* device_array, float* device_vector, int n) {
     curandGenerateUniform(gen, device_array, n * n);
     curandGenerateUniform(gen, device_vector, n);
+}
+
+float compute_condition_number(cusolverDnHandle_t cusolver_handle, const float* A, int n) {
+    float *S, *U, *VT, *A_copy;
+    int* device_info;
+
+    cudaMalloc(&S, n * sizeof(float));
+    cudaMalloc(&U, 1);
+    cudaMalloc(&VT, 1);
+    cudaMalloc(&A_copy, n * n * sizeof(float));
+    cudaMalloc(&device_info, sizeof(int));
+    cudaMemcpy(A_copy, A, n * n * sizeof(float), cudaMemcpyDeviceToDevice);
+
+    int work_size = 0;
+    cusolverDnSgesvd_bufferSize(cusolver_handle, n, n, &work_size);
+    float* work_array;
+    cudaMalloc(&work_array, work_size * sizeof(float));
+
+    cusolverDnSgesvd(cusolver_handle, 'N', 'N', n, n, A_copy, n, S, U, 1, VT, 1, work_array,
+                     work_size, nullptr, device_info);
+
+    thrust::device_ptr<float> S_ptr(S);
+    auto max_it = thrust::max_element(S_ptr, S_ptr + n);
+    auto min_it = thrust::min_element(S_ptr, S_ptr + n);
+
+    float sigma_max = *max_it;
+    float sigma_min = *min_it;
+    cudaFree(work_array);
+    cudaFree(device_info);
+    cudaFree(A_copy);
+    cudaFree(VT);
+    cudaFree(U);
+    cudaFree(S);
+
+    return sigma_max / sigma_min;
 }
 
 /** @brief Solve least squares using normal equations (A^T A)x = A^T b. Note: This method is fast
@@ -199,21 +245,25 @@ void qr_decomposition_solver(cublasHandle_t cublas_handle, cusolverDnHandle_t cu
  */
 float compute_residual(cublasHandle_t cublas_handle, const float* A, const float* b, int n,
                        float* x) {
-    float alpha = 1.0f, beta = 0.0f, minus_one = -1.0f;
-    float* tmp;
-    cudaMalloc(&tmp, n * sizeof(float));
+    float alpha = 1.0f, beta = 0.0f;
+    float* Ax;
+    cudaMalloc(&Ax, n * sizeof(float));
 
     // tmp = A * x
-    cublasSgemv(cublas_handle, CUBLAS_OP_N, n, n, &alpha, A, n, x, 1, &beta, tmp, 1);
+    cublasSgemv(cublas_handle, CUBLAS_OP_N, n, n, &alpha, A, n, x, 1, &beta, Ax, 1);
 
-    // tmp = tmp - b
-    cublasSaxpy(cublas_handle, n, &minus_one, b, 1, tmp, 1);
+    // Compute norm using thrust
+    thrust::device_ptr<float> Ax_ptr(Ax);
+    thrust::device_ptr<const float> b_ptr(b);
+    thrust::transform(Ax_ptr, Ax_ptr + n, b_ptr, Ax_ptr, [] __device__(float ax, float bi) {
+        float diff = ax - bi;
+        return diff * diff;
+    });
 
-    float norm;
-    cublasSnrm2(cublas_handle, n, tmp, 1, &norm);
+    float sum = thrust::reduce(Ax_ptr, Ax_ptr + n, 0.0f, thrust::plus<float>());
 
-    cudaFree(tmp);
-    return norm;
+    cudaFree(Ax);
+    return std::sqrt(sum);
 }
 
 /** @brief Executes a solver, measures runtime, and computes residual. Creates working copies of A
@@ -290,6 +340,7 @@ int main(int argc, char* argv[]) {
         cudaMalloc(&device_x, n * sizeof(float));
 
         generate_random_data(rng, device_A, device_b, n);
+        float condition = compute_condition_number(cusolver_handle, device_A, n);
         float ne_residual;
         float ne_timing = solve_system(normal_equations_solver, cublas_handle, cusolver_handle,
                                        device_A, device_b, n, device_x, &ne_residual);
@@ -300,7 +351,8 @@ int main(int argc, char* argv[]) {
 
         // First run is warmup
         if (i != 0) {
-            print_timing_and_residuals(n, ne_timing, ne_residual, qr_timing, qr_residual);
+            print_timing_and_residuals(n, condition, ne_timing, ne_residual, qr_timing,
+                                       qr_residual);
         }
 
         cudaFree(device_x);
