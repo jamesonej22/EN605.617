@@ -1,4 +1,4 @@
-# Module 6 Assignment - Eric Jameson
+# Module 9 Assignment - Eric Jameson
 
 This folder contains the Module 9 assignment for EN605.617 - Introduction to GPU Programming. Most of the existing content in this folder has been removed so that only the assigment and relevant materials remain.
 
