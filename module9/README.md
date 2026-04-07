@@ -1,4 +1,4 @@
-# Module 6 Assignment - Eric Jameson
+# Module 9 Assignment - Eric Jameson
 
 This folder contains the Module 9 assignment for EN605.617 - Introduction to GPU Programming. Most of the existing content in this folder has been removed so that only the assigment and relevant materials remain.
 
@@ -61,6 +61,14 @@ To evaluate solution quality, we compute the residual $\|Ax-b\|_2$. This was imp
 
 ### Condition Number Analysis
 
+To better understand the numerical behavior of the algorithms implemented in this assignment, the condition number of each matrix was computed:
+
+```math
+\kappa(A) = \frac{\sigma_\text{max}}{\sigma_\text{min}},
+```
+
+where $\sigma_\text{max}$ and $\sigma_\text{min}$ are the maximum and minimum singular values of $A$, computed using cuSOLVER's singular value decomposition routines, with Thrust reducing the vector of singular values to obtain the minimum and maximum. Essentially, the larger the condition number, the worse we expect the normal equations method to perform.
+
 ## Implementation Details
 
 ### Compilation and Running
@@ -90,3 +98,21 @@ This image shows a successful run of the assignment program with a different ran
 ![Image showing sample output with arguments passed](images/Output_42.png)
 
 ## Discussion
+
+Overall, my goals for this assignment were to understand some of the advanced functionality in linear algebra-based libraries such as cuBLAS and cuSOLVER, while also dipping my toes into the functional programming world with reduction using Thrust. I also wanted to see if theory would match reality with the numerical instability issues mentioned above.
+
+### Successes
+
+First of all, I was pleased that I was able to figure out more than one standard method of solving a system of linear algebra equations with the CUDA advanced libraries. I feel that cuBLAS and cuSOLVER work really well together and both can be used hand-in-hand for real life applications. I also did find using Thrust to be a rewarding experience that enabled some slightly different ideas on how to program standard routines that could be done using loops. I think Thrust is one of the easier libraries to use with minimal GPU programming knowledge since the syntax is so similar to the C++ standard library.
+
+### Difficulties
+
+I found that cuSOLVER was one of the more difficult libraries to use, mostly due to the names of the routines. I think this is also partially the case for cuBLAS, but I think the choice was made intentionally in order to maintain some familiarity for developers who have experience with standard BLAS. As an example, to solve a system of equations using the QR factorization method, one must first call `cuSolverDnSgeqrf` followed by `cuSolverDnSormqr`, and then `cublasStrsm`. It is not clear to me what `geqrf`, `ormqr` or `trsm` mean in this context.
+
+After doing a small bit of research, I was able to learn that:
+
+- `geqrf` means GEneral matrix QR Factorization
+- `ormqr` Multiplies a real matrix by the orthogonal matrix Q of the QR factorization formed by geqrf. `or` means ORthogonal matrix, and `qr` is obvious, but I'm not sure what the `m` signifies.
+- `trsm` means TRiangular Solve Matrix
+
+All in all, being able to match the function names with the mathematical operations was not as straightforward as expected.
