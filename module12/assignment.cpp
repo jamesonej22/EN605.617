@@ -1,6 +1,9 @@
 #define CL_TARGET_OPENCL_VERSION 220
 
+#include <openssl/evp.h>
+
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -14,10 +17,32 @@
 #include <CL/cl.h>
 #endif
 
-#define NUM_SIZES 3
+#define NUM_SIZES 4
 #define NUM_RUNS 5
 #define WARMUP_RUNS 1
-const uint32_t INPUT_SIZES[NUM_SIZES] = {1 << 20, 1 << 24, 1 << 28};
+#define CHACHA_KEY_SIZE 32
+#define CHACHA_NONCE_SIZE 12
+
+const uint32_t INPUT_SIZES[NUM_SIZES] = {1 << 20, 1 << 24, 1 << 28, 1 << 30};
+
+void chacha20_openssl(const uint8_t *key, const uint8_t *nonce, uint32_t counter,
+                      const uint8_t *input, uint8_t *output, size_t len) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+
+    uint8_t iv[16];
+    std::memcpy(iv + 4, nonce, 12);
+    iv[0] = counter & 0xFF;
+    iv[1] = (counter >> 8) & 0xFF;
+    iv[2] = (counter >> 16) & 0xFF;
+    iv[3] = (counter >> 24) & 0xFF;
+
+    EVP_EncryptInit_ex(ctx, EVP_chacha20(), NULL, key, iv);
+
+    int out_len;
+    EVP_EncryptUpdate(ctx, output, &out_len, input, len);
+
+    EVP_CIPHER_CTX_free(ctx);
+}
 
 void random_bytes(uint8_t *data, size_t size, std::mt19937_64 &rng) {
     std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
@@ -244,7 +269,8 @@ void print_header(unsigned long long seed) {
         << "\n+-----------------------------------------------------------------------------+\n"
         << "| EN605.617 Module 12 Assignment                                 Eric Jameson |\n"
         << "+-----------------------------------------------------------------------------+\n"
-        << "| Performing OpenCL-based ChaCha20 encryption of random byte arrays of sizes: |\n"
+        << "| Performing OpenCL-based ChaCha20 encryption vs. OpenSSL reference           |\n"
+        << "| implementation on random byte arrays of sizes:                              |\n"
         << "| ";
 
     for (int i = 0; i < NUM_SIZES; i++) {
@@ -254,32 +280,78 @@ void print_header(unsigned long long seed) {
         }
     }
     std::cout
-        << std::setw(50) << " |\n"
+        << std::setw(38) << " |\n"
         << "|                                                                             |\n"
         << "| Random seed: " << seed << std::setw(65 - std::to_string(seed).length()) << " |\n"
         << "+-----------------------------------------------------------------------------+\n";
 }
 
-void print_timing(uint32_t input_size, double total_time) {
-    double avg_time = total_time / NUM_RUNS;
-
+void print_timing(uint32_t input_size, double total_time_host, double total_time_gpu, bool match) {
+    double avg_time_gpu = total_time_gpu / NUM_RUNS;
     double gb = input_size / (1024.0 * 1024.0 * 1024.0);
-    double seconds = avg_time / 1000.0;
-    double throughput = gb / seconds;
+    double seconds = avg_time_gpu / 1000.0;
+    double throughput_gpu = gb / seconds;
 
-    std::ostringstream header, line1, line2;
-    header << "| INPUT SIZE: " << input_size;
-    line1 << std::fixed << std::setprecision(5) << "|   Avg Time:   " << avg_time << " ms";
-    line2 << std::fixed << std::setprecision(5) << "|   Throughput: " << throughput << " GB/s";
+    double avg_time_host = total_time_host / NUM_RUNS;
+    gb = input_size / (1024.0 * 1024.0 * 1024.0);
+    seconds = avg_time_host / 1000.0;
+    double throughput_host = gb / seconds;
+    std::string match_string = match ? "Outputs match!" : "Mismatch in output";
+    int total_width = 77;
+    int value_width = 14;
 
-    const int WIDTH = 78;
-
+    std::cout << std::fixed << std::setprecision(5);
     std::cout
-        << std::left << std::setw(WIDTH) << header.str() << "|\n"
+        << "| INPUT SIZE: " << input_size
+        << std::setw(total_width - std::to_string(input_size).length() - match_string.length())
+        << match_string << " |\n"
         << "+-----------------------------------------------------------------------------+\n"
-        << std::left << std::setw(WIDTH) << line1.str() << "|\n"
-        << std::left << std::setw(WIDTH) << line2.str() << "|\n"
-        << "+-----------------------------------------------------------------------------+\n";
+        // OpenCL
+        << "|   OpenCL    |                     Avg Time:        " << std::setw(value_width + 3)
+        << avg_time_gpu << " ms     |\n"
+        << "|             |                     Throughput:      " << std::setw(value_width + 3)
+        << throughput_gpu << " GB/s   |\n"
+        << "+-------------+                                                               |\n"
+        // OpenSSL
+        << "|   OpenSSL   |                     Avg Time:        " << std::setw(value_width + 3)
+        << avg_time_host << " ms     |\n"
+        << "|             |                     Throughput:      " << std::setw(value_width + 3)
+        << throughput_host << " GB/s   |\n"
+        << "+-----------------------------------------------------------------------------+"
+           "\n";
+}
+
+double run_timing_host(const uint8_t *plaintext, uint8_t *key, uint8_t *nonce, uint32_t input_size,
+                       uint32_t counter, uint8_t *ciphertext) {
+    double total_time = 0.0;
+    for (int r = 0; r < WARMUP_RUNS + NUM_RUNS; r++) {
+        auto start = std::chrono::high_resolution_clock::now();
+        chacha20_openssl(key, nonce, counter, plaintext, ciphertext, input_size);
+        auto end = std::chrono::high_resolution_clock::now();
+        double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+        if (r >= WARMUP_RUNS) {
+            total_time += elapsed;
+        }
+    }
+    return total_time;
+}
+
+double run_timing_gpu(cl_command_queue command_queue, cl_kernel kernel, cl_mem input, cl_mem output,
+                      cl_mem key, cl_mem nonce, uint32_t input_size, uint32_t counter,
+                      uint8_t *output_host) {
+    double total_time = 0.0;
+    for (int r = 0; r < WARMUP_RUNS + NUM_RUNS; r++) {
+        auto start = std::chrono::high_resolution_clock::now();
+        run_kernel(command_queue, kernel, input, output, key, nonce, input_size, counter,
+                   output_host);
+        auto end = std::chrono::high_resolution_clock::now();
+        double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+        if (r >= WARMUP_RUNS) {
+            total_time += elapsed;
+        }
+    }
+    cleanup(0, 0, 0, 0, input, output, key, nonce);
+    return total_time;
 }
 
 int main(int argc, char *argv[]) {
@@ -304,37 +376,29 @@ int main(int argc, char *argv[]) {
         uint32_t input_size = INPUT_SIZES[i];
         uint32_t counter = 1;
 
-        // Host buffers
         std::vector<uint8_t> plaintext(input_size);
         std::vector<uint8_t> ciphertext(input_size);
-        uint8_t key_host[32];
-        uint8_t nonce_host[12];
+        std::vector<uint8_t> ciphertext_host(input_size);
+        uint8_t key_host[CHACHA_KEY_SIZE];
+        uint8_t nonce_host[CHACHA_NONCE_SIZE];
         random_bytes(plaintext.data(), input_size, rng);
-        random_bytes(key_host, 32, rng);
-        random_bytes(nonce_host, 12, rng);
+        random_bytes(key_host, CHACHA_KEY_SIZE, rng);
+        random_bytes(nonce_host, CHACHA_NONCE_SIZE, rng);
 
         cl_mem input = 0, output = 0, key = 0, nonce = 0;
-
         if (create_buffers(context, input_size, input, output, key, nonce, plaintext.data(),
                            key_host, nonce_host) != 0) {
             cleanup(context, command_queue, program, kernel, input, output, key, nonce);
             return 1;
         }
 
-        double total_time_ms = 0.0;
-        for (int r = 0; r < WARMUP_RUNS + NUM_RUNS; r++) {
-            auto start = std::chrono::high_resolution_clock::now();
-            run_kernel(command_queue, kernel, input, output, key, nonce, input_size, counter,
-                       ciphertext.data());
-            auto end = std::chrono::high_resolution_clock::now();
-            double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
-            if (r >= WARMUP_RUNS) {
-                total_time_ms += elapsed;
-            }
-        }
+        double total_time_host = run_timing_host(plaintext.data(), key_host, nonce_host, input_size,
+                                                 counter, ciphertext_host.data());
+        double total_time_gpu = run_timing_gpu(command_queue, kernel, input, output, key, nonce,
+                                               input_size, counter, ciphertext.data());
 
-        print_timing(input_size, total_time_ms);
-        cleanup(0, 0, 0, 0, input, output, key, nonce);
+        bool match = memcmp(ciphertext.data(), ciphertext_host.data(), input_size) == 0;
+        print_timing(input_size, total_time_host, total_time_gpu, match);
     }
 
     cleanup(context, command_queue, program, kernel, 0, 0, 0, 0);
