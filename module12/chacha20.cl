@@ -1,5 +1,25 @@
+/** @file chacha20.cl
+ * @author Eric Jameson
+ * @brief OpenCL-based implementation of the ChaCha20 stream cipher, using vector-based operations
+ * whenever possible.
+ */
+
+/** @brief Helper to bitwise left rotate a 32-bit unsigned integer.
+ *
+ * @param x The integer to rotate.
+ * @param n The number of positions to rotate by.
+ * @return The rotated integer.
+ */
 inline uint rotl(uint x, uint n) { return (x << n) | (x >> (32 - n)); }
 
+/** @brief Implementation of a ChaCha quarter-round operation. Note that all input values are
+ * modified in this function.
+ *
+ * @param[in,out] a The first integer.
+ * @param[in,out] b The second integer.
+ * @param[in,out] c The third integer.
+ * @param[in,out] d The fourth integer.
+ */
 inline void quarter_round(uint* a, uint* b, uint* c, uint* d) {
     *a += *b;
     *d ^= *a;
@@ -15,6 +35,15 @@ inline void quarter_round(uint* a, uint* b, uint* c, uint* d) {
     *b = rotl(*b, 7);
 }
 
+/** @brief Helper function to initialize the state for this block of ChaCha, based on the key,
+ * nonce, counter, and ID of this block. Uses vector operations to increase performance.
+ *
+ * @param[out] state The initialized state.
+ * @param key The encryption key in bytes.
+ * @param nonce The nonce in bytes.
+ * @param counter The initial counter for the overall encryption.
+ * @param gid The global ID of this block.
+ */
 inline void initialize_state(uint* state, const uchar* key, const uchar* nonce, const uint counter,
                              int gid) {
     state[0] = 0x61707865;
@@ -45,6 +74,15 @@ inline void initialize_state(uint* state, const uchar* key, const uchar* nonce, 
     state[15] = nonce32[2];
 }
 
+/** @brief OpenCL kernel to perform ChaCha20 encryption/decryption.
+ *
+ * @param input The plaintext to encrypt or ciphertext to decrypt.
+ * @param[out] output The encrypted ciphertext/decrypted plaintext.
+ * @param key The encryption key for this run of ChaCha20.
+ * @param nonce The nonce for this run of ChaCha20.
+ * @param counter The counter for the first block to encrypt/decrypt.
+ * @param input_size The length of the input in bytes.
+ */
 __kernel void chacha_kernel(__global const uchar* input, __global uchar* output,
                             __global const uchar* key, __global const uchar* nonce,
                             const uint counter, const uint input_size) {

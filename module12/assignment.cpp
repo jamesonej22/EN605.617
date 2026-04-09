@@ -1,3 +1,11 @@
+/** @file assignment.cpp
+ * @author Eric Jameson
+ * @brief Functions and helpers to set-up OpenCL-based ChaCha20 encryption of multiple random files
+ * with comparison against OpenSSL reference implementations for the Module 12 assignment of
+ * EN605.617.
+ */
+
+/** @brief Target version of OpenCL. */
 #define CL_TARGET_OPENCL_VERSION 220
 
 #include <openssl/evp.h>
@@ -17,14 +25,30 @@
 #include <CL/cl.h>
 #endif
 
+/** @brief The number of input sizes. */
 #define NUM_SIZES 4
+/** @brief The number of timing runs per input size. */
 #define NUM_RUNS 5
+/** @brief The number of warmup (non-timing) runs per input size. */
 #define WARMUP_RUNS 1
+/** @brief The size of a ChaCha key in bytes. */
 #define CHACHA_KEY_SIZE 32
+/** @brief The size of a ChaCha nonce in bytes. */
 #define CHACHA_NONCE_SIZE 12
 
+/** @brief The input sizes to use for timing comparisons. */
 const uint32_t INPUT_SIZES[NUM_SIZES] = {1 << 20, 1 << 24, 1 << 28, 1 << 30};
 
+/** @brief Wrapper for OpenSSL-based reference implementation of ChaCha20 for correctness
+ * verification.
+ *
+ * @param key The encryption key for this run of ChaCha20.
+ * @param nonce The nonce for this run of ChaCha20.
+ * @param counter The initial counter for encryption.
+ * @param input The plaintext to encrypt or ciphertext to decrypt.
+ * @param[out] output The encrypted plaintext or decrypted ciphertext.
+ * @param len The length of the input in bytes.
+ */
 void chacha20_openssl(const uint8_t *key, const uint8_t *nonce, uint32_t counter,
                       const uint8_t *input, uint8_t *output, size_t len) {
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
@@ -44,6 +68,12 @@ void chacha20_openssl(const uint8_t *key, const uint8_t *nonce, uint32_t counter
     EVP_CIPHER_CTX_free(ctx);
 }
 
+/** @brief Helper to generate random byte arrays of a particular size.
+ *
+ * @param[out] data The location to store the random bytes.
+ * @param size The number of bytes to generate.
+ * @param rng Previously initialized random number generator.
+ */
 void random_bytes(uint8_t *data, size_t size, std::mt19937_64 &rng) {
     std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
 
@@ -61,6 +91,10 @@ void random_bytes(uint8_t *data, size_t size, std::mt19937_64 &rng) {
     }
 }
 
+/** @brief OpenCL helper to create a GPU or CPU context after finding platforms.
+ *
+ * @return NULL if no context can be created, otherwise the initialized context.
+ */
 cl_context create_context() {
     cl_int errNum;
     cl_uint numPlatforms;
@@ -89,6 +123,12 @@ cl_context create_context() {
     return context;
 }
 
+/** @brief OpenCL helper to create a command queue using the previously initialized context.
+ *
+ * @param context The previously initialized OpenCL context.
+ * @param[out] device The first initialized device.
+ * @return NULL if no command queue can be created, otherwise the initialized command queue.
+ */
 cl_command_queue create_command_queue(cl_context context, cl_device_id *device) {
     cl_int errNum;
     cl_device_id *devices;
@@ -126,13 +166,20 @@ cl_command_queue create_command_queue(cl_context context, cl_device_id *device) 
     return command_queue;
 }
 
-cl_program create_program(cl_context context, cl_device_id device, const char *fileName) {
+/** @brief OpenCL helper to create a program using a previously initialized context and device.
+ *
+ * @param context The previously initialized OpenCL context.
+ * @param device The previously initialized OpenCL device.
+ * @param filename The name of the file containing the OpenCL kernel.
+ * @return NULL if no program can be created, otherwise the created OpenCL program.
+ */
+cl_program create_program(cl_context context, cl_device_id device, const char *filename) {
     cl_int errNum;
     cl_program program;
 
-    std::ifstream kernelFile(fileName, std::ios::in);
+    std::ifstream kernelFile(filename, std::ios::in);
     if (!kernelFile.is_open()) {
-        std::cerr << "Failed to open file for reading: " << fileName << std::endl;
+        std::cerr << "Failed to open file for reading: " << filename << std::endl;
         return NULL;
     }
 
@@ -162,6 +209,16 @@ cl_program create_program(cl_context context, cl_device_id device, const char *f
     return program;
 }
 
+/** @brief Wrapper to create all necessary pieces for OpenCL operation in this assignment. Inputs
+ * are unitialized and passed by reference so that they can be initialized in their respective
+ * initialization functions.
+ *
+ * @param[in,out] context The OpenCL context to intialize.
+ * @param[in,out] command_queue The OpenCL command queue to initialize.
+ * @param[in,out] program The OpenCL program to initialize.
+ * @param[in,out] kernel The OpenCL kernel to initialize.
+ * @return 1 if any piece fails to initialize properly, 0 otherwise.
+ */
 int initialize(cl_context &context, cl_command_queue &command_queue, cl_program &program,
                cl_kernel &kernel) {
     cl_device_id device = 0;
@@ -193,21 +250,35 @@ int initialize(cl_context &context, cl_command_queue &command_queue, cl_program 
     return 0;
 }
 
+/** @brief OpenCL helper to initialize all memory buffers for this program, copying memory from the
+ * host if applicable.
+ *
+ * @param context The initialized OpenCL context.
+ * @param input_size The size of the plaintext in bytes.
+ * @param input The OpenCL memory buffer for the input.
+ * @param output The OpenCL memory buffer for the output.
+ * @param key The OpenCL memory buffer for the key.
+ * @param nonce The OpenCL memory buffer for the nonce.
+ * @param plaintext The host location for the plaintext array.
+ * @param key_host The host location for the key.
+ * @param nonce_host The host location for the nonce.
+ * @return 1 if any buffer is not created successfully, 0 otherwise.
+ */
 int create_buffers(cl_context context, uint32_t input_size, cl_mem &input, cl_mem &output,
-                   cl_mem &key_buf, cl_mem &nonce_buf, const uint8_t *plaintext,
-                   const uint8_t *key_host, const uint8_t *nonce_host) {
+                   cl_mem &key, cl_mem &nonce, const uint8_t *plaintext, const uint8_t *key_host,
+                   const uint8_t *nonce_host) {
     input = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, input_size,
                            (void *)plaintext, NULL);
 
     output = clCreateBuffer(context, CL_MEM_WRITE_ONLY, input_size, NULL, NULL);
 
-    key_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32, (void *)key_host,
-                             NULL);
+    key = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 32, (void *)key_host,
+                         NULL);
 
-    nonce_buf = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 12,
-                               (void *)nonce_host, NULL);
+    nonce = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, 12, (void *)nonce_host,
+                           NULL);
 
-    if (!input || !output || !key_buf || !nonce_buf) {
+    if (!input || !output || !key || !nonce) {
         std::cerr << "Error creating buffers\n";
         return 1;
     }
@@ -215,13 +286,27 @@ int create_buffers(cl_context context, uint32_t input_size, cl_mem &input, cl_me
     return 0;
 }
 
+/** @brief Wrapper to run the OpenCL ChaCha20 program with previously initialized command queue,
+ * kernel, and memory objects. Stores the output back into a host buffer for ease of use.
+ *
+ * @param command_queue The initialized OpenCL command queue.
+ * @param kernel The initialized OpenCL kernel.
+ * @param input The OpenCL memory buffer for the input.
+ * @param output The OpenCL memory buffer for the output.
+ * @param key The OpenCL memory buffer for the key.
+ * @param nonce The OpenCL memory buffer for the nonce.
+ * @param input_size The size of the plaintext in bytes.
+ * @param counter The initial counter for encryption.
+ * @param[out] ciphertext The host location to store the ciphertext.
+ * @return 1 if any errors occur in running the kernel, 0 otherwise.
+ */
 int run_kernel(cl_command_queue command_queue, cl_kernel kernel, cl_mem input, cl_mem output,
-               cl_mem key_buf, cl_mem nonce_buf, uint32_t input_size, uint32_t counter,
+               cl_mem key, cl_mem nonce, uint32_t input_size, uint32_t counter,
                uint8_t *ciphertext) {
     cl_int errNum = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input);
     errNum |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &output);
-    errNum |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &key_buf);
-    errNum |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &nonce_buf);
+    errNum |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &key);
+    errNum |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &nonce);
     errNum |= clSetKernelArg(kernel, 4, sizeof(uint32_t), &counter);
     errNum |= clSetKernelArg(kernel, 5, sizeof(uint32_t), &input_size);
 
@@ -252,6 +337,17 @@ int run_kernel(cl_command_queue command_queue, cl_kernel kernel, cl_mem input, c
     return 0;
 }
 
+/** @brief Helper to release all OpenCL objects to ensure there are no memory leaks.
+ *
+ * @param context The OpenCL context object to release.
+ * @param command_queue The OpenCL command queue object to release.
+ * @param program The OpenCL program object to release.
+ * @param kernel The OpenCL kernel object to release.
+ * @param input The input OpenCL memory object to release.
+ * @param output The output OpenCL memory object to release.
+ * @param key The key OpenCL memory object to release.
+ * @param nonce The nonce OpenCL memory object to release.
+ */
 void cleanup(cl_context context, cl_command_queue command_queue, cl_program program,
              cl_kernel kernel, cl_mem input, cl_mem output, cl_mem key, cl_mem nonce) {
     if (input != 0) clReleaseMemObject(input);
@@ -264,6 +360,11 @@ void cleanup(cl_context context, cl_command_queue command_queue, cl_program prog
     if (context != 0) clReleaseContext(context);
 }
 
+/** @brief Helper to print the assignment header and random seed, along with input sizes that
+ * will be measured.
+ *
+ * @param seed The random seed used for this program.
+ */
 void print_header(unsigned long long seed) {
     std::cout
         << "\n+-----------------------------------------------------------------------------+\n"
@@ -286,6 +387,14 @@ void print_header(unsigned long long seed) {
         << "+-----------------------------------------------------------------------------+\n";
 }
 
+/** @brief Helper to print the timing results for the given input size, host/device times, and an
+ * indication on whether the outputs match.
+ *
+ * @param input_size The input size in bytes.
+ * @param total_time_host The total time taken for all runs on the host.
+ * @param total_time_gpu The total time taken for all runs on the device.
+ * @param match Indication of whether the outputs for this run match.
+ */
 void print_timing(uint32_t input_size, double total_time_host, double total_time_gpu, bool match) {
     double avg_time_gpu = total_time_gpu / NUM_RUNS;
     double gb = input_size / (1024.0 * 1024.0 * 1024.0);
@@ -321,6 +430,17 @@ void print_timing(uint32_t input_size, double total_time_host, double total_time
            "\n";
 }
 
+/** @brief Wrapper to call the OpenSSL reference implementation of ChaCha20 and time how long it
+ * takes.
+ *
+ * @param plaintext The plaintext to encrypt.
+ * @param key The encryption key.
+ * @param nonce The nonce used for encryption.
+ * @param input_size The input size in bytes.
+ * @param counter The initial counter for encryption.
+ * @param[out] ciphertext Location to store the ciphertext.
+ * @return The total time taken for all runs (excluding warmup runs).
+ */
 double run_timing_host(const uint8_t *plaintext, uint8_t *key, uint8_t *nonce, uint32_t input_size,
                        uint32_t counter, uint8_t *ciphertext) {
     double total_time = 0.0;
@@ -336,6 +456,19 @@ double run_timing_host(const uint8_t *plaintext, uint8_t *key, uint8_t *nonce, u
     return total_time;
 }
 
+/** @brief Wrapper to call the OpenCL implementation of ChaCha20 and time how long it takes.
+ *
+ * @param command_queue The OpenCL command queue object.
+ * @param kernel The OpenCL kernel object.
+ * @param input The input OpenCL memory object.
+ * @param output The output OpenCL memory object.
+ * @param key The key OpenCL memory object.
+ * @param nonce The nonce OpenCL memory object.
+ * @param input_size The input size in bytes.
+ * @param counter The initial counter for encryption.
+ * @param[out] output_host The location to store the ciphertext on the host.
+ * @return The total time taken for all runs (excluding warmup runs).
+ */
 double run_timing_gpu(cl_command_queue command_queue, cl_kernel kernel, cl_mem input, cl_mem output,
                       cl_mem key, cl_mem nonce, uint32_t input_size, uint32_t counter,
                       uint8_t *output_host) {
@@ -354,6 +487,15 @@ double run_timing_gpu(cl_command_queue command_queue, cl_kernel kernel, cl_mem i
     return total_time;
 }
 
+/** @brief Entry point for the ChaCha20 encryption program. For each input size, generates random
+ * plaintext bytes, then encrypts the plaintext using both the OpenCL implementation found in
+ * chacha20.cl and an OpenSSL reference implementaiton. Measures runtime for both methods, compares
+ * the outputs, and then prints the results.
+ *
+ * @param argc Number of arguments passed to this program.
+ * @param argv Array of arguments passed to this program.
+ * @return 1 if there are any errors in OpenCL instantiation, 0 otherwise.
+ */
 int main(int argc, char *argv[]) {
     unsigned long long seed = 1234ULL;
     if (argc > 1) {
